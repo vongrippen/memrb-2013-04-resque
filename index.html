@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+
+	<head>
+		<meta charset="utf-8">
+
+		<title>reveal.js - The HTML Presentation Framework</title>
+
+		<meta name="description" content="A framework for easily creating beautiful presentations using HTML">
+		<meta name="author" content="Hakim El Hattab">
+
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+		<link rel="stylesheet" href="css/reveal.min.css">
+		<link rel="stylesheet" href="css/theme/default.css" id="theme">
+
+		<!-- For syntax highlighting -->
+		<link rel="stylesheet" href="lib/css/zenburn.css">
+
+		<!-- If the query includes 'print-pdf', use the PDF print sheet -->
+		<script>
+			document.write( '<link rel="stylesheet" href="css/print/' + ( window.location.search.match( /print-pdf/gi ) ? 'pdf' : 'paper' ) + '.css" type="text/css" media="print">' );
+		</script>
+
+		<!--[if lt IE 9]>
+		<script src="lib/js/html5shiv.js"></script>
+		<![endif]-->
+	</head>
+
+	<body>
+
+		<div class="reveal">
+
+			<!-- Any section element inside of this container is displayed as a slide -->
+<div class="slides">
+    <section>
+        <h1>Background Processing With Resque</h1>
+        <p>Mike Cochran</p>
+        <p>@vongrippen</p>
+        <p>
+        <br>
+    </p>
+    <p>
+    <br>
+</p>
+<p>http://www.rvl.io/vongrippen/resque<br>
+</p>
+</section>
+<section>
+    <h2>Quick Info on Resque</h2>
+<div>
+    <ul>
+        <li class="fragment visible">Built by Github
+        <ul>
+        <li>https://github.com/blog/542-introducing-resque</li>
+        </ul>
+</li>
+<li class="fragment visible">Uses Redis
+    <ul>
+<li>Fast key-value store</li>
+</ul>
+</li>
+<li class="fragment visible">Pure Ruby, Rails not required</li>
+<li class="fragment visible">Named queues</li>
+<li class="fragment visible">Queued data is pure JSON</li>
+<li class="fragment visible">Simple, easy to use
+<ul>
+<li>Create a class with a "perform" method.<br>That's pretty much it. </li>
+</ul>
+</li>
+<li class="fragment visible">Uses process forks for workers
+    <ul>
+        <li>Avoids the GIL in MRI Ruby</li>
+    </ul>
+</li>
+<li class="fragment visible">Bundled Web UI</li>
+    </ul>
+</div>
+
+
+
+
+
+
+
+
+</section>
+    <section>
+        <section>
+            <h2>
+                <br>
+            </h2>
+            <h2>
+                <br>
+            </h2>
+            <h2>
+                <br>
+            </h2>
+            <h2>the Problem</h2>
+        </section>
+        <section>
+            <h2>Simulating an investment portfolio</h2>
+<div>(Average Case)</div>
+<div>
+    <br>
+    </div>
+<div>
+    <ul>
+        <li class="fragment visible">Invest for 30 years</li>
+        <li class="fragment visible">Rebalance investments after each year</li>
+        <li class="fragment visible">Simulate 205 times, incrementing the starting quarter
+            <ul class="fragment roll-in visible">
+                <li>Start in Dec 1932, invest for 30 years</li>
+<li>Start in Mar 1933, invest for 30 years</li>
+<li>Start in Jun 1933, invest for 30 years</li>
+<li>... etc</li>
+    </ul>
+</li>
+        <li class="fragment visible">Save each simulation (called a "period")</li>
+    <li class="fragment visible">Collect the summary of each as a "Case Result"</li>
+</ul>
+</div>
+
+
+
+
+
+
+
+</section>
+        </section>
+        <section>
+            <section>
+                <h2>Without Resque</h2>
+<div style="text-align: left;">Controller</div>
+<div>
+    <pre>
+                <code>def create
+  client_case.input = filtered_params
+  client_case.calculate
+  # 3 minutes later...
+  client.save
+  # Render HTML
+end
+</code>
+            </pre>
+
+</div>
+
+</section>
+            <section>
+                <h2>
+    <br>
+</h2>
+<h2>
+    <br>
+</h2>
+<h2>
+    <br>
+</h2>
+<h2>The result?</h2>
+<div>Timeout Error</div>
+</section>
+                <section>
+                    <h2>Here's the Slow down</h2>
+<div style="text-align: left;">
+    Model
+</div>
+<div>
+    <pre>
+                    <code>def calculate
+  periods = 0..(periods_to_run-1)
+  summaries = [ ]
+  periods.each do |period|
+    # Do a bunch of fun math
+    years_in_period = calculate_period(input, period)
+    self.save_period(period, years_in_period)
+    summaries &lt;&lt; years_in_period.last
+  end
+  self.summary = summarize(summaries)
+end
+</code>
+                </pre>
+</div>
+            </section>
+        </section>
+        <section>
+            <h2>
+    <br>
+</h2>
+<h2>
+    <br>
+</h2>
+<h2>
+    <br>
+</h2>
+<h2>Let's Add Resque</h2>
+</section>
+            <section>
+                <section>
+                    <h2>With Resque</h2>
+<div style="text-align: left;">Controller</div>
+<div style="text-align: center;">
+    <pre>
+                    <code>def create
+  client_case.input = filtered_params
+  client_case.save
+  Resque.enqueue(CaseWorker, client_case.id)
+  # Render HTML
+end
+</code>
+                </pre>
+</div>
+<div style="text-align: left;">CaseWorker</div>
+<div style="text-align: center;">
+    <pre>
+                <code>class CaseWorker
+  @queue = :cases
+
+  def self.perform(case_id)
+    client_case = Case.find(case_id)
+    client_case.calculate
+    client_case.save
+  end
+end</code>
+            </pre>
+</div>
+
+</section>
+            <section>
+                <h2>
+    <br>
+</h2>
+<h2>
+    <br>
+</h2>
+<h2>
+    <br>
+</h2>
+<h2>The result?</h2>
+<div>No Timeout!</div>
+<div>(But it still takes 3 minutes to calculate)</div>
+
+</section>
+                <section>
+                    <h2>Here's the Slow down (Still)</h2>
+<div style="text-align: left;">
+    Model
+</div>
+<div>
+    <pre>
+                    <code>def calculate
+  periods = 0..(periods_to_run-1)
+  summaries = [ ]
+  periods.each do |period|
+    # Do a bunch of fun math
+    years_in_period = calculate_period(input, period)
+    self.save_period(period, years_in_period)
+    summaries &lt;&lt; years_in_period.last
+  end
+  self.summary = summarize(summaries)
+end
+</code>
+                </pre>
+</div>
+
+</section>
+            </section>
+            <section>
+                <h2>
+    <br>
+</h2>
+<h2>
+    <br>
+</h2>
+<h2>
+    <br>
+</h2>
+<h2>Let's Add (More) Resque</h2>
+</section>
+                <section>
+                    <section>
+                        <h2>With (More) Resque</h2>
+<div style="text-align: left;">Controller</div>
+<div style="text-align: center;">
+    <pre>
+                        <code>def create
+  client_case.input = filtered_params
+  client_case.save
+  (0..client_case.periods_to_run-1).each do |period|
+    Resque.enqueue(PeriodWorker, case_id, period)
+  end
+  # Render HTML
+end</code>
+                    </pre>
+</div>
+<div style="text-align: left;">CaseWorker</div>
+<div style="text-align: center;">
+    <pre>
+                    <code>class CaseWorker
+  @queue = :cases
+  def self.perform(case_id)
+    client_case = Case.find(case_id)
+    client_case.summary = summarize(client_case.summaries)
+    client_case.save
+  end
+end</code>
+                </pre>
+</div>
+
+
+
+
+</section>
+                <section>
+                    <h2>With (More) Resque</h2>
+<div style="text-align: left;">PeriodWorker</div>
+<div style="text-align: center;">
+    <pre>
+                    <code>class PeriodWorker
+  @queue = :periods
+
+  def self.perform(case_id, period)
+    client_case = Case.find(case_id)
+    years_in_period = calculate_period(input, period)
+    client_case.save_period(period, years_in_period)
+    client_case.summaries &lt;&lt; years_in_period.last
+    client_case.save
+    if client_case.periods == client_case.periods_in_case
+      Resque.enqueue(CaseWorker, case_id)
+    end
+  end 
+end</code>
+                </pre>
+</div>
+
+
+</section>
+                <section>
+                    <h2>
+    <br>
+</h2>
+<h2>
+                    <br>
+                </h2>
+                <div>
+                    <br>
+                    </div>
+<h2>The result?</h2>
+<div>No Timeout!</div>
+<div>Plus, I can now throw more machines at it.</div>
+                    <div>With 30 "workers" running, 25 seconds.</div>
+
+</section>
+                </section>
+                <section>
+                    <section>
+                        <h2>
+                            <br>
+                        </h2>
+                        <h2>
+                            <br>
+                        </h2>
+                        <h2>
+                            <br>
+                        </h2>
+                        <h2>What did we just do exactly?</h2>
+                    </section>
+                    <section>
+                        <h2>
+    <br>
+</h2>
+<div>
+    <br>
+</div>
+<div>
+    <br>
+</div>
+<div>
+    <br>
+</div>
+<div>
+    <ul>
+        <li class="fragment">We separated the calculation from our web app itself</li>
+        <li class="fragment">We broke down our code into smaller bits</li>
+        <li class="fragment">We ensured that our code could be run in parallel on multiple machines</li>
+    </ul>
+</div>
+</section>
+                        <section>
+                            <h2>
+    <br>
+</h2>
+<h2>
+    <br>
+</h2>
+<h2>Workers run</h2>
+<h1>Anywhere,<br>Anytime</h1>
+</section>
+                            <section>
+                                <h2>
+    <br>
+</h2>
+<h2>
+    <br>
+</h2>
+<h1>Run as many<br>as you want</h1>
+</section>
+                            </section>
+                            <section>
+                                <h2>
+                                    <br>
+                                </h2>
+                                <h2>
+                                    <br>
+                                </h2>
+                                <h2>
+                                    <br>
+                                </h2>
+                                <h2>Q &amp; A</h2>
+</section>
+                                <section>
+                                    <section>
+                                        <h2>Resources</h2>
+<div>
+    <br>
+</div>
+<div>Project:</div>
+<div>https://github.com/resque/resque<br>
+</div>
+<div>
+    <br>
+</div>
+<div>Screencast:</div>
+<div>http://railscasts.com/episodes/271-resque<br>
+</div>
+</section>
+                                        <section>
+                                            <h2>Sidekiq</h2>
+<div>sidekiq.org</div>
+<div>
+    <br>
+</div>
+<div>
+    <ul>
+        <li>Uses threads instead of forks</li>
+        <li>Easily extensible</li>
+        <li>Has a lot of extra functionality out of the box</li>
+        <li>Only loads a single copy of Rails in memory (if using Rails)</li>
+        <li>Smaller footprint</li>
+    </ul>
+    <div style="text-align: left;">
+        <br>
+    </div>
+</div>
+<h2>CAVEATS<br>
+</h2>
+<div>
+    <ul>
+        <li>You code must be thread-safe</li>
+        <li>Any gem you use must be thread-safe</li>
+        <li>More processor intensive</li>
+    </ul>
+</div>
+</section>
+                                        </section>
+                                    </div>
+
+
+		</div>
+
+		<script src="lib/js/head.min.js"></script>
+		<script src="js/reveal.min.js"></script>
+
+		<script>
+
+			// Full list of configuration options available here:
+			// https://github.com/hakimel/reveal.js#configuration
+			Reveal.initialize({
+				controls: true,
+				progress: true,
+				history: true,
+				center: true,
+
+				theme: Reveal.getQueryHash().theme, // available themes are in /css/theme
+				transition: Reveal.getQueryHash().transition || 'default', // default/cube/page/concave/zoom/linear/fade/none
+
+				// Optional libraries used to extend on reveal.js
+				dependencies: [
+					{ src: 'lib/js/classList.js', condition: function() { return !document.body.classList; } },
+					{ src: 'plugin/markdown/showdown.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: 'plugin/markdown/markdown.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: 'plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } },
+					{ src: 'plugin/zoom-js/zoom.js', async: true, condition: function() { return !!document.body.classList; } },
+					{ src: 'plugin/notes/notes.js', async: true, condition: function() { return !!document.body.classList; } }
+					// { src: 'plugin/search/search.js', async: true, condition: function() { return !!document.body.classList; } }
+					// { src: 'plugin/remotes/remotes.js', async: true, condition: function() { return !!document.body.classList; } }
+				]
+			});
+
+		</script>
+
+	</body>
+</html>
